@@ -2,6 +2,7 @@
 #include "cpu.h"
 #include "exec/exec-all.h"
 #include "sysemu/kvm.h"
+#include "sysemu/tcg.h"
 #include "helper_regs.h"
 #include "mmu-hash64.h"
 #include "migration/cpu.h"
@@ -20,7 +21,10 @@ static void post_load_update_msr(CPUPPCState *env)
      */
     env->msr ^= env->msr_mask & ~((1ULL << MSR_TGPR) | MSR_HVB);
     ppc_store_msr(env, msr);
-    pmu_update_summaries(env);
+
+    if (tcg_enabled()) {
+        pmu_update_summaries(env);
+    }
 }
 
 static int get_avr(QEMUFile *f, void *pv, size_t size,
@@ -205,9 +209,8 @@ static int cpu_pre_save(void *opaque)
         }
     }
 
-    /* Retain migration compatibility for pre 6.0 for 601 machines. */
-    env->hflags_compat_nmsr = (env->flags & POWERPC_FLAG_HID0_LE
-                               ? env->hflags & MSR_LE : 0);
+    /* Used to retain migration compatibility for pre 6.0 for 601 machines. */
+    env->hflags_compat_nmsr = 0;
 
     return 0;
 }
