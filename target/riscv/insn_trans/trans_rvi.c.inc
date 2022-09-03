@@ -32,17 +32,13 @@ static bool trans_c64_illegal(DisasContext *ctx, arg_empty *a)
 
 static bool trans_lui(DisasContext *ctx, arg_lui *a)
 {
-    if (a->rd != 0) {
-        gen_set_gpri(ctx, a->rd, a->imm);
-    }
+    gen_set_gpri(ctx, a->rd, a->imm);
     return true;
 }
 
 static bool trans_auipc(DisasContext *ctx, arg_auipc *a)
 {
-    if (a->rd != 0) {
-        gen_set_gpri(ctx, a->rd, a->imm + ctx->base.pc_next);
-    }
+    gen_set_gpri(ctx, a->rd, a->imm + ctx->base.pc_next);
     return true;
 }
 
@@ -806,7 +802,7 @@ static bool trans_fence(DisasContext *ctx, arg_fence *a)
 
 static bool trans_fence_i(DisasContext *ctx, arg_fence_i *a)
 {
-    if (!ctx->ext_ifencei) {
+    if (!ctx->cfg_ptr->ext_ifencei) {
         return false;
     }
 
@@ -822,6 +818,8 @@ static bool trans_fence_i(DisasContext *ctx, arg_fence_i *a)
 
 static bool do_csr_post(DisasContext *ctx)
 {
+    /* The helper may raise ILLEGAL_INSN -- record binv for unwind. */
+    decode_save_opc(ctx);
     /* We may have changed important cpu state -- exit to main loop. */
     gen_set_pc_imm(ctx, ctx->pc_succ_insn);
     tcg_gen_exit_tb(NULL, 0);
