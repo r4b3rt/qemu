@@ -14,7 +14,6 @@
 
 #include "qemu/osdep.h"
 #include <glib/gstdio.h>
-#include "qemu-common.h"
 #include "qemu/bitmap.h"
 #include "acpi-utils.h"
 #include "boot-sector.h"
@@ -157,5 +156,4 @@ uint64_t acpi_find_rsdp_address_uefi(QTestState *qts, uint64_t start,
         g_usleep(TEST_DELAY);
     }
     g_assert_not_reached();
-    return 0;
 }

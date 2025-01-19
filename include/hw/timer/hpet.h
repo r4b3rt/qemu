@@ -58,7 +58,6 @@
 #define HPET_TN_CFG_WRITE_MASK  0x7f4e
 #define HPET_TN_INT_ROUTE_SHIFT      9
 #define HPET_TN_INT_ROUTE_CAP_SHIFT 32
-#define HPET_TN_CFG_BITS_READONLY_OR_RESERVED 0xffff80b1U
 
 struct hpet_fw_entry
 {
@@ -77,6 +76,8 @@ struct hpet_fw_config
 extern struct hpet_fw_config hpet_cfg;
 
 #define TYPE_HPET "hpet"
+
+#define HPET_INTCAP "hpet-intcap"
 
 static inline bool hpet_find(void)
 {

@@ -1,3 +1,5 @@
+.. _user-mode:
+
 QEMU User space emulator
 ========================
 
@@ -41,6 +43,8 @@ QEMU user space emulation has the following notable features:
 QEMU was conceived so that ultimately it can emulate itself. Although it
 is not very useful, it is an important test to show the power of the
 emulator.
+
+.. _linux-user-mode:
 
 Linux User space emulator
 -------------------------
@@ -87,14 +91,13 @@ Debug options:
    Activate logging of the specified items (use '-d help' for a list of
    log items)
 
-``-p pagesize``
-   Act as if the host page size was 'pagesize' bytes
-
 ``-g port``
    Wait gdb connection to port
 
-``-singlestep``
-   Run the emulation in single step mode.
+``-one-insn-per-tb``
+   Run the emulation with one guest instruction per translation block.
+   This slows down emulation a lot, but can be useful in some situations,
+   such as when trying to analyse the logs produced by the ``-d`` option.
 
 Environment variables:
 
@@ -131,10 +134,6 @@ Other binaries
 
    The binary format is detected automatically.
 
--  user mode (Cris)
-
-   * ``qemu-cris`` TODO.
-
 -  user mode (i386)
 
    * ``qemu-i386`` TODO.
@@ -160,13 +159,8 @@ Other binaries
    * ``qemu-mipsn32el`` executes 32-bit little endian MIPS binaries (MIPS N32
      ABI).
 
--  user mode (NiosII)
-
-   * ``qemu-nios2`` TODO.
-
 -  user mode (PowerPC)
 
-   * ``qemu-ppc64abi32`` TODO.
    * ``qemu-ppc64`` TODO.
    * ``qemu-ppc`` TODO.
 
@@ -184,6 +178,8 @@ Other binaries
 
    * ``qemu-sparc64`` can execute some Sparc64 (Sparc64 CPU, 64 bit ABI) and
      SPARC32PLUS binaries (Sparc64 CPU, 32 bit ABI).
+
+.. _bsd-user-mode:
 
 BSD User space emulator
 -----------------------
@@ -243,5 +239,7 @@ Debug options:
 ``-p pagesize``
    Act as if the host page size was 'pagesize' bytes
 
-``-singlestep``
-   Run the emulation in single step mode.
+``-one-insn-per-tb``
+   Run the emulation with one guest instruction per translation block.
+   This slows down emulation a lot, but can be useful in some situations,
+   such as when trying to analyse the logs produced by the ``-d`` option.

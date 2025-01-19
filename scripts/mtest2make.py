@@ -27,7 +27,8 @@ SPEED = quick
 .speed.slow = $(foreach s,$(sort $(filter-out %-thorough, $1)), --suite $s)
 .speed.thorough = $(foreach s,$(sort $1), --suite $s)
 
-.mtestargs = --no-rebuild -t 0
+TIMEOUT_MULTIPLIER ?= 1
+.mtestargs = --no-rebuild -t $(TIMEOUT_MULTIPLIER)
 ifneq ($(SPEED), quick)
 .mtestargs += --setup $(SPEED)
 endif
@@ -51,10 +52,11 @@ def process_tests(test, targets, suites):
 
     test_suites = test['suite'] or ['default']
     for s in test_suites:
-        # The suite name in the introspection info is "PROJECT:SUITE"
-        s = s.split(':')[1]
-        if s == 'slow' or s == 'thorough':
-            continue
+        # The suite name in the introspection info is "PROJECT" or "PROJECT:SUITE"
+        if ':' in s:
+            s = s.split(':')[1]
+            if s == 'slow' or s == 'thorough':
+                continue
         if s.endswith('-slow'):
             s = s[:-5]
             suites[s].speeds.append('slow')
@@ -81,12 +83,12 @@ def emit_prolog(suites, prefix):
 
 def emit_suite_deps(name, suite, prefix):
     deps = ' '.join(suite.deps)
-    targets = f'{prefix}-{name} {prefix}-report-{name}.junit.xml {prefix} {prefix}-report.junit.xml'
+    targets = [f'{prefix}-{name}', f'{prefix}-report-{name}.junit.xml', f'{prefix}', f'{prefix}-report.junit.xml',
+               f'{prefix}-build']
     print()
     print(f'.{prefix}-{name}.deps = {deps}')
-    print(f'ifneq ($(filter {prefix}-build {targets}, $(MAKECMDGOALS)),)')
-    print(f'.{prefix}.build-suites += {name}')
-    print(f'endif')
+    for t in targets:
+        print(f'.ninja-goals.{t} += $(.{prefix}-{name}.deps)')
 
 def emit_suite(name, suite, prefix):
     emit_suite_deps(name, suite, prefix)
@@ -101,10 +103,6 @@ targets = {t['id']: [os.path.relpath(f) for f in t['filename']]
 testsuites = defaultdict(Suite)
 for test in introspect['tests']:
     process_tests(test, targets, testsuites)
-# HACK: check-block is a separate target so that it runs with --verbose;
-# only write the dependencies
-emit_suite_deps('block', testsuites['block'], 'check')
-del testsuites['block']
 emit_prolog(testsuites, 'check')
 for name, suite in testsuites.items():
     emit_suite(name, suite, 'check')

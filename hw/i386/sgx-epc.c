@@ -19,12 +19,11 @@
 #include "target/i386/cpu.h"
 #include "exec/address-spaces.h"
 
-static Property sgx_epc_properties[] = {
+static const Property sgx_epc_properties[] = {
     DEFINE_PROP_UINT64(SGX_EPC_ADDR_PROP, SGXEPCDevice, addr, 0),
     DEFINE_PROP_UINT32(SGX_EPC_NUMA_NODE_PROP, SGXEPCDevice, node, 0),
     DEFINE_PROP_LINK(SGX_EPC_MEMDEV_PROP, SGXEPCDevice, hostmem,
                      TYPE_MEMORY_BACKEND_EPC, HostMemoryBackendEpc *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void sgx_epc_get_size(Object *obj, Visitor *v, const char *name,
@@ -167,7 +166,7 @@ static void sgx_epc_class_init(ObjectClass *oc, void *data)
     mdc->fill_device_info = sgx_epc_md_fill_device_info;
 }
 
-static TypeInfo sgx_epc_info = {
+static const TypeInfo sgx_epc_info = {
     .name          = TYPE_SGX_EPC,
     .parent        = TYPE_DEVICE,
     .instance_size = sizeof(SGXEPCDevice),

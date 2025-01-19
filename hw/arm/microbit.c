@@ -12,7 +12,7 @@
 #include "qapi/error.h"
 #include "hw/boards.h"
 #include "hw/arm/boot.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "exec/address-spaces.h"
 
 #include "hw/arm/nrf51_soc.h"
@@ -57,7 +57,7 @@ static void microbit_init(MachineState *machine)
                                         mr, -1);
 
     armv7m_load_kernel(ARM_CPU(first_cpu), machine->kernel_filename,
-                       s->nrf51.flash_size);
+                       0, s->nrf51.flash_size);
 }
 
 static void microbit_machine_class_init(ObjectClass *oc, void *data)

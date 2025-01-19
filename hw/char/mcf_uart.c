@@ -312,9 +312,8 @@ static void mcf_uart_realize(DeviceState *dev, Error **errp)
                              mcf_uart_event, NULL, s, NULL, true);
 }
 
-static Property mcf_uart_properties[] = {
+static const Property mcf_uart_properties[] = {
     DEFINE_PROP_CHR("chardev", mcf_uart_state, chr),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void mcf_uart_class_init(ObjectClass *oc, void *data)
@@ -322,7 +321,7 @@ static void mcf_uart_class_init(ObjectClass *oc, void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->realize = mcf_uart_realize;
-    dc->reset = mcf_uart_reset;
+    device_class_set_legacy_reset(dc, mcf_uart_reset);
     device_class_set_props(dc, mcf_uart_properties);
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
 }
@@ -342,25 +341,26 @@ static void mcf_uart_register(void)
 
 type_init(mcf_uart_register)
 
-void *mcf_uart_init(qemu_irq irq, Chardev *chrdrv)
+DeviceState *mcf_uart_create(qemu_irq irq, Chardev *chrdrv)
 {
-    DeviceState  *dev;
+    DeviceState *dev;
 
     dev = qdev_new(TYPE_MCF_UART);
     if (chrdrv) {
         qdev_prop_set_chr(dev, "chardev", chrdrv);
     }
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, irq);
 
     return dev;
 }
 
-void mcf_uart_mm_init(hwaddr base, qemu_irq irq, Chardev *chrdrv)
+DeviceState *mcf_uart_create_mmap(hwaddr base, qemu_irq irq, Chardev *chrdrv)
 {
-    DeviceState  *dev;
+    DeviceState *dev;
 
-    dev = mcf_uart_init(irq, chrdrv);
+    dev = mcf_uart_create(irq, chrdrv);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
+
+    return dev;
 }

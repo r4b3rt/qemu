@@ -4,6 +4,8 @@
   This work is licensed under the terms of the GNU GPL, version 2 or
   later. See the COPYING file in the top-level directory.
 
+.. _mttcg:
+
 ==================
 Multi-threaded TCG
 ==================
@@ -109,6 +111,7 @@ including:
   - debugging operations (breakpoint insertion/removal)
   - some CPU helper functions
   - linux-user spawning its first thread
+  - operations related to TCG Plugins
 
 This is done with the async_safe_run_on_cpu() mechanism to ensure all
 vCPUs are quiescent when changes are being made to shared global
@@ -204,15 +207,10 @@ DESIGN REQUIREMENTS:
 
 (Current solution)
 
-We have updated cputlb.c to defer operations when a cross-vCPU
-operation with async_run_on_cpu() which ensures each vCPU sees a
-coherent state when it next runs its work (in a few instructions
-time).
-
-A new set up operations (tlb_flush_*_all_cpus) take an additional flag
-which when set will force synchronisation by setting the source vCPUs
-work as "safe work" and exiting the cpu run loop. This ensure by the
-time execution restarts all flush operations have completed.
+A new set of tlb flush operations (tlb_flush_*_all_cpus_synced) force
+synchronisation by setting the source vCPUs work as "safe work" and
+exiting the cpu run loop. This ensures that by the time execution
+restarts all flush operations have completed.
 
 TLB flag updates are all done atomically and are also protected by the
 corresponding page lock.
@@ -226,10 +224,9 @@ instruction. This could be a future optimisation.
 Emulated hardware state
 -----------------------
 
-Currently thanks to KVM work any access to IO memory is automatically
-protected by the global iothread mutex, also known as the BQL (Big
-QEMU Lock). Any IO region that doesn't use global mutex is expected to
-do its own locking.
+Currently thanks to KVM work any access to IO memory is automatically protected
+by the BQL (Big QEMU Lock). Any IO region that doesn't use the BQL is expected
+to do its own locking.
 
 However IO memory isn't the only way emulated hardware state can be
 modified. Some architectures have model specific registers that

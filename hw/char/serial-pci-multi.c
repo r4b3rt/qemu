@@ -25,13 +25,13 @@
  * THE SOFTWARE.
  */
 
-/* see docs/specs/pci-serial.txt */
+/* see docs/specs/pci-serial.rst */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/char/serial.h"
 #include "hw/irq.h"
-#include "hw/pci/pci.h"
+#include "hw/pci/pci_device.h"
 #include "hw/qdev-properties.h"
 #include "hw/qdev-properties-system.h"
 #include "migration/vmstate.h"
@@ -123,7 +123,7 @@ static const VMStateDescription vmstate_pci_multi_serial = {
     .name = "pci-serial-multi",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(dev, PCIMultiSerialState),
         VMSTATE_STRUCT_ARRAY(state, PCIMultiSerialState, PCI_SERIAL_MAX_PORTS,
                              0, vmstate_serial, SerialState),
@@ -132,20 +132,18 @@ static const VMStateDescription vmstate_pci_multi_serial = {
     }
 };
 
-static Property multi_2x_serial_pci_properties[] = {
+static const Property multi_2x_serial_pci_properties[] = {
     DEFINE_PROP_CHR("chardev1",  PCIMultiSerialState, state[0].chr),
     DEFINE_PROP_CHR("chardev2",  PCIMultiSerialState, state[1].chr),
     DEFINE_PROP_UINT8("prog_if",  PCIMultiSerialState, prog_if, 0x02),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static Property multi_4x_serial_pci_properties[] = {
+static const Property multi_4x_serial_pci_properties[] = {
     DEFINE_PROP_CHR("chardev1",  PCIMultiSerialState, state[0].chr),
     DEFINE_PROP_CHR("chardev2",  PCIMultiSerialState, state[1].chr),
     DEFINE_PROP_CHR("chardev3",  PCIMultiSerialState, state[2].chr),
     DEFINE_PROP_CHR("chardev4",  PCIMultiSerialState, state[3].chr),
     DEFINE_PROP_UINT8("prog_if",  PCIMultiSerialState, prog_if, 0x02),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void multi_2x_serial_pci_class_initfn(ObjectClass *klass, void *data)

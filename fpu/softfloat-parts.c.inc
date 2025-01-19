@@ -39,65 +39,151 @@ static void partsN(return_nan)(FloatPartsN *a, float_status *s)
 static FloatPartsN *partsN(pick_nan)(FloatPartsN *a, FloatPartsN *b,
                                      float_status *s)
 {
+    bool have_snan = false;
+    FloatPartsN *ret;
+    int cmp;
+
     if (is_snan(a->cls) || is_snan(b->cls)) {
         float_raise(float_flag_invalid | float_flag_invalid_snan, s);
+        have_snan = true;
     }
 
     if (s->default_nan_mode) {
         parts_default_nan(a, s);
-    } else {
-        int cmp = frac_cmp(a, b);
+        return a;
+    }
+
+    switch (s->float_2nan_prop_rule) {
+    case float_2nan_prop_s_ab:
+        if (have_snan) {
+            ret = is_snan(a->cls) ? a : b;
+            break;
+        }
+        /* fall through */
+    case float_2nan_prop_ab:
+        ret = is_nan(a->cls) ? a : b;
+        break;
+    case float_2nan_prop_s_ba:
+        if (have_snan) {
+            ret = is_snan(b->cls) ? b : a;
+            break;
+        }
+        /* fall through */
+    case float_2nan_prop_ba:
+        ret = is_nan(b->cls) ? b : a;
+        break;
+    case float_2nan_prop_x87:
+        /*
+         * This implements x87 NaN propagation rules:
+         * SNaN + QNaN => return the QNaN
+         * two SNaNs => return the one with the larger significand, silenced
+         * two QNaNs => return the one with the larger significand
+         * SNaN and a non-NaN => return the SNaN, silenced
+         * QNaN and a non-NaN => return the QNaN
+         *
+         * If we get down to comparing significands and they are the same,
+         * return the NaN with the positive sign bit (if any).
+         */
+        if (is_snan(a->cls)) {
+            if (!is_snan(b->cls)) {
+                ret = is_qnan(b->cls) ? b : a;
+                break;
+            }
+        } else if (is_qnan(a->cls)) {
+            if (is_snan(b->cls) || !is_qnan(b->cls)) {
+                ret = a;
+                break;
+            }
+        } else {
+            ret = b;
+            break;
+        }
+        cmp = frac_cmp(a, b);
         if (cmp == 0) {
             cmp = a->sign < b->sign;
         }
-
-        if (pickNaN(a->cls, b->cls, cmp > 0, s)) {
-            a = b;
-        }
-        if (is_snan(a->cls)) {
-            parts_silence_nan(a, s);
-        }
+        ret = cmp > 0 ? a : b;
+        break;
+    default:
+        g_assert_not_reached();
     }
-    return a;
+
+    if (is_snan(ret->cls)) {
+        parts_silence_nan(ret, s);
+    }
+    return ret;
 }
 
 static FloatPartsN *partsN(pick_nan_muladd)(FloatPartsN *a, FloatPartsN *b,
                                             FloatPartsN *c, float_status *s,
                                             int ab_mask, int abc_mask)
 {
-    int which;
+    bool infzero = (ab_mask == float_cmask_infzero);
+    bool have_snan = (abc_mask & float_cmask_snan);
+    FloatPartsN *ret;
 
-    if (unlikely(abc_mask & float_cmask_snan)) {
+    if (unlikely(have_snan)) {
         float_raise(float_flag_invalid | float_flag_invalid_snan, s);
     }
 
-    which = pickNaNMulAdd(a->cls, b->cls, c->cls,
-                          ab_mask == float_cmask_infzero, s);
+    if (infzero) {
+        /* This is (0 * inf) + NaN or (inf * 0) + NaN */
+        float_raise(float_flag_invalid | float_flag_invalid_imz, s);
+    }
 
-    if (s->default_nan_mode || which == 3) {
+    if (s->default_nan_mode) {
         /*
-         * Note that this check is after pickNaNMulAdd so that function
-         * has an opportunity to set the Invalid flag for infzero.
+         * We guarantee not to require the target to tell us how to
+         * pick a NaN if we're always returning the default NaN.
+         * But if we're not in default-NaN mode then the target must
+         * specify.
          */
-        parts_default_nan(a, s);
-        return a;
+        goto default_nan;
+    } else if (infzero) {
+        /*
+         * Inf * 0 + NaN -- some implementations return the
+         * default NaN here, and some return the input NaN.
+         */
+        switch (s->float_infzeronan_rule) {
+        case float_infzeronan_dnan_never:
+            break;
+        case float_infzeronan_dnan_always:
+            goto default_nan;
+        case float_infzeronan_dnan_if_qnan:
+            if (is_qnan(c->cls)) {
+                goto default_nan;
+            }
+            break;
+        default:
+            g_assert_not_reached();
+        }
+        ret = c;
+    } else {
+        FloatPartsN *val[R_3NAN_1ST_MASK + 1] = { a, b, c };
+        Float3NaNPropRule rule = s->float_3nan_prop_rule;
+
+        assert(rule != float_3nan_prop_none);
+        if (have_snan && (rule & R_3NAN_SNAN_MASK)) {
+            /* We have at least one SNaN input and should prefer it */
+            do {
+                ret = val[rule & R_3NAN_1ST_MASK];
+                rule >>= R_3NAN_1ST_LENGTH;
+            } while (!is_snan(ret->cls));
+        } else {
+            do {
+                ret = val[rule & R_3NAN_1ST_MASK];
+                rule >>= R_3NAN_1ST_LENGTH;
+            } while (!is_nan(ret->cls));
+        }
     }
 
-    switch (which) {
-    case 0:
-        break;
-    case 1:
-        a = b;
-        break;
-    case 2:
-        a = c;
-        break;
-    default:
-        g_assert_not_reached();
+    if (is_snan(ret->cls)) {
+        parts_silence_nan(ret, s);
     }
-    if (is_snan(a->cls)) {
-        parts_silence_nan(a, s);
-    }
+    return ret;
+
+ default_nan:
+    parts_default_nan(a, s);
     return a;
 }
 
@@ -118,7 +204,8 @@ static void partsN(canonicalize)(FloatPartsN *p, float_status *status,
         } else {
             int shift = frac_normalize(p);
             p->cls = float_class_normal;
-            p->exp = fmt->frac_shift - fmt->exp_bias - shift + 1;
+            p->exp = fmt->frac_shift - fmt->exp_bias
+                   - shift + !fmt->m68k_denormal;
         }
     } else if (likely(p->exp < fmt->exp_max) || fmt->arm_althp) {
         p->cls = float_class_normal;
@@ -154,6 +241,9 @@ static void partsN(uncanon_normal)(FloatPartsN *p, float_status *s,
     int exp, flags = 0;
 
     switch (s->float_rounding_mode) {
+    case float_round_nearest_even_max:
+        overflow_norm = true;
+        /* fall through */
     case float_round_nearest_even:
         if (N > 64 && frac_lsb == 0) {
             inc = ((p->frac_hi & 1) || (p->frac_lo & round_mask) != frac_lsbm1
@@ -214,16 +304,33 @@ static void partsN(uncanon_normal)(FloatPartsN *p, float_status *s,
                 p->frac_lo &= ~round_mask;
             }
         } else if (unlikely(exp >= exp_max)) {
-            flags |= float_flag_overflow | float_flag_inexact;
-            if (overflow_norm) {
+            flags |= float_flag_overflow;
+            if (s->rebias_overflow) {
+                exp -= fmt->exp_re_bias;
+            } else if (overflow_norm) {
+                flags |= float_flag_inexact;
                 exp = exp_max - 1;
                 frac_allones(p);
                 p->frac_lo &= ~round_mask;
             } else {
+                flags |= float_flag_inexact;
                 p->cls = float_class_inf;
                 exp = exp_max;
                 frac_clear(p);
             }
+        }
+        frac_shr(p, frac_shift);
+    } else if (unlikely(s->rebias_underflow)) {
+        flags |= float_flag_underflow;
+        exp += fmt->exp_re_bias;
+        if (p->frac_lo & round_mask) {
+            flags |= float_flag_inexact;
+            if (frac_addi(p, p, inc)) {
+                frac_shr(p, 1);
+                p->frac_hi |= DECOMPOSED_IMPLICIT_BIT;
+                exp++;
+            }
+            p->frac_lo &= ~round_mask;
         }
         frac_shr(p, frac_shift);
     } else if (s->flush_to_zero) {
@@ -239,7 +346,7 @@ static void partsN(uncanon_normal)(FloatPartsN *p, float_status *s,
             is_tiny = !frac_addi(&discard, p, inc);
         }
 
-        frac_shrjam(p, 1 - exp);
+        frac_shrjam(p, !fmt->m68k_denormal - exp);
 
         if (p->frac_lo & round_mask) {
             /* Need to recompute round-to-even/round-to-odd. */
@@ -270,7 +377,7 @@ static void partsN(uncanon_normal)(FloatPartsN *p, float_status *s,
             p->frac_lo &= ~round_mask;
         }
 
-        exp = (p->frac_hi & DECOMPOSED_IMPLICIT_BIT) != 0;
+        exp = (p->frac_hi & DECOMPOSED_IMPLICIT_BIT) && !fmt->m68k_denormal;
         frac_shr(p, frac_shift);
 
         if (is_tiny && (flags & float_flag_inexact)) {
@@ -458,8 +565,9 @@ static FloatPartsN *partsN(mul)(FloatPartsN *a, FloatPartsN *b,
  * Requires A and C extracted into a double-sized structure to provide the
  * extra space for the widening multiply.
  */
-static FloatPartsN *partsN(muladd)(FloatPartsN *a, FloatPartsN *b,
-                                   FloatPartsN *c, int flags, float_status *s)
+static FloatPartsN *partsN(muladd_scalbn)(FloatPartsN *a, FloatPartsN *b,
+                                          FloatPartsN *c, int scale,
+                                          int flags, float_status *s)
 {
     int ab_mask, abc_mask;
     FloatPartsW p_widen, c_widen;
@@ -507,7 +615,9 @@ static FloatPartsN *partsN(muladd)(FloatPartsN *a, FloatPartsN *b,
             goto return_normal;
         }
         if (c->cls == float_class_zero) {
-            if (a->sign != c->sign) {
+            if (flags & float_muladd_suppress_add_product_zero) {
+                a->sign = c->sign;
+            } else if (a->sign != c->sign) {
                 goto return_sub_zero;
             }
             goto return_zero;
@@ -548,9 +658,7 @@ static FloatPartsN *partsN(muladd)(FloatPartsN *a, FloatPartsN *b,
     a->exp = p_widen.exp;
 
  return_normal:
-    if (flags & float_muladd_halve_result) {
-        a->exp -= 1;
-    }
+    a->exp += scale;
  finish_sign:
     if (flags & float_muladd_negate_result) {
         a->sign ^= 1;
@@ -1165,6 +1273,84 @@ static uint64_t partsN(float_to_uint)(FloatPartsN *p, FloatRoundMode rmode,
 }
 
 /*
+ * Like partsN(float_to_sint), except do not saturate the result.
+ * Instead, return the rounded unbounded precision two's compliment result,
+ * modulo 2**(bitsm1 + 1).
+ */
+static int64_t partsN(float_to_sint_modulo)(FloatPartsN *p,
+                                            FloatRoundMode rmode,
+                                            int bitsm1, float_status *s)
+{
+    int flags = 0;
+    uint64_t r;
+    bool overflow = false;
+
+    switch (p->cls) {
+    case float_class_snan:
+        flags |= float_flag_invalid_snan;
+        /* fall through */
+    case float_class_qnan:
+        flags |= float_flag_invalid;
+        r = 0;
+        break;
+
+    case float_class_inf:
+        overflow = true;
+        r = 0;
+        break;
+
+    case float_class_zero:
+        return 0;
+
+    case float_class_normal:
+        /* TODO: N - 2 is frac_size for rounding; could use input fmt. */
+        if (parts_round_to_int_normal(p, rmode, 0, N - 2)) {
+            flags = float_flag_inexact;
+        }
+
+        if (p->exp <= DECOMPOSED_BINARY_POINT) {
+            /*
+             * Because we rounded to integral, and exp < 64,
+             * we know frac_low is zero.
+             */
+            r = p->frac_hi >> (DECOMPOSED_BINARY_POINT - p->exp);
+            if (p->exp < bitsm1) {
+                /* Result in range. */
+            } else if (p->exp == bitsm1) {
+                /* The only in-range value is INT_MIN. */
+                overflow = !p->sign || p->frac_hi != DECOMPOSED_IMPLICIT_BIT;
+            } else {
+                overflow = true;
+            }
+        } else {
+            /* Overflow, but there might still be bits to return. */
+            int shl = p->exp - DECOMPOSED_BINARY_POINT;
+            if (shl < N) {
+                frac_shl(p, shl);
+                r = p->frac_hi;
+            } else {
+                r = 0;
+            }
+            overflow = true;
+        }
+
+        if (p->sign) {
+            r = -r;
+        }
+        break;
+
+    default:
+        g_assert_not_reached();
+    }
+
+    if (overflow) {
+        flags = float_flag_invalid | float_flag_invalid_cvti;
+    }
+    float_raise(flags, s);
+    return r;
+}
+
+/*
  * Integer to float conversions
  *
  * Returns the result of converting the two's complement integer `a'
@@ -1277,7 +1463,6 @@ static FloatPartsN *partsN(minmax)(FloatPartsN *a, FloatPartsN *b,
             break;
         default:
             g_assert_not_reached();
-            break;
         }
         switch (b->cls) {
         case float_class_normal:
@@ -1290,7 +1475,6 @@ static FloatPartsN *partsN(minmax)(FloatPartsN *a, FloatPartsN *b,
             break;
         default:
             g_assert_not_reached();
-            break;
         }
     }
 
@@ -1327,16 +1511,19 @@ static FloatRelation partsN(compare)(FloatPartsN *a, FloatPartsN *b,
                                      float_status *s, bool is_quiet)
 {
     int ab_mask = float_cmask(a->cls) | float_cmask(b->cls);
-    int cmp;
 
     if (likely(ab_mask == float_cmask_normal)) {
+        FloatRelation cmp;
+
         if (a->sign != b->sign) {
             goto a_sign;
         }
-        if (a->exp != b->exp) {
-            cmp = a->exp < b->exp ? -1 : 1;
-        } else {
+        if (a->exp == b->exp) {
             cmp = frac_cmp(a, b);
+        } else if (a->exp < b->exp) {
+            cmp = float_relation_less;
+        } else {
+            cmp = float_relation_greater;
         }
         if (a->sign) {
             cmp = -cmp;
@@ -1416,6 +1603,7 @@ static void partsN(log2)(FloatPartsN *a, float_status *s, const FloatFmt *fmt)
             parts_return_nan(a, s);
             return;
         case float_class_zero:
+            float_raise(float_flag_divbyzero, s);
             /* log2(0) = -inf */
             a->cls = float_class_inf;
             a->sign = 1;

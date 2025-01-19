@@ -42,10 +42,10 @@
 #define R_MAX       8
 
 #define TYPE_XILINX_INTC "xlnx.xps-intc"
-DECLARE_INSTANCE_CHECKER(struct xlx_pic, XILINX_INTC,
-                         TYPE_XILINX_INTC)
+typedef struct XpsIntc XpsIntc;
+DECLARE_INSTANCE_CHECKER(XpsIntc, XILINX_INTC, TYPE_XILINX_INTC)
 
-struct xlx_pic
+struct XpsIntc
 {
     SysBusDevice parent_obj;
 
@@ -62,7 +62,7 @@ struct xlx_pic
     uint32_t irq_pin_state;
 };
 
-static void update_irq(struct xlx_pic *p)
+static void update_irq(XpsIntc *p)
 {
     uint32_t i;
 
@@ -87,10 +87,9 @@ static void update_irq(struct xlx_pic *p)
     qemu_set_irq(p->parent_irq, (p->regs[R_MER] & 1) && p->regs[R_IPR]);
 }
 
-static uint64_t
-pic_read(void *opaque, hwaddr addr, unsigned int size)
+static uint64_t pic_read(void *opaque, hwaddr addr, unsigned int size)
 {
-    struct xlx_pic *p = opaque;
+    XpsIntc *p = opaque;
     uint32_t r = 0;
 
     addr >>= 2;
@@ -106,11 +105,10 @@ pic_read(void *opaque, hwaddr addr, unsigned int size)
     return r;
 }
 
-static void
-pic_write(void *opaque, hwaddr addr,
-          uint64_t val64, unsigned int size)
+static void pic_write(void *opaque, hwaddr addr,
+                      uint64_t val64, unsigned int size)
 {
-    struct xlx_pic *p = opaque;
+    XpsIntc *p = opaque;
     uint32_t value = val64;
 
     addr >>= 2;
@@ -146,6 +144,10 @@ static const MemoryRegionOps pic_ops = {
     .read = pic_read,
     .write = pic_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
+    .impl = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+    },
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4
@@ -154,7 +156,7 @@ static const MemoryRegionOps pic_ops = {
 
 static void irq_handler(void *opaque, int irq, int level)
 {
-    struct xlx_pic *p = opaque;
+    XpsIntc *p = opaque;
 
     /* edge triggered interrupt */
     if (p->c_kind_of_intr & (1 << irq) && p->regs[R_MER] & 2) {
@@ -168,7 +170,7 @@ static void irq_handler(void *opaque, int irq, int level)
 
 static void xilinx_intc_init(Object *obj)
 {
-    struct xlx_pic *p = XILINX_INTC(obj);
+    XpsIntc *p = XILINX_INTC(obj);
 
     qdev_init_gpio_in(DEVICE(obj), irq_handler, 32);
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &p->parent_irq);
@@ -178,9 +180,8 @@ static void xilinx_intc_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &p->mmio);
 }
 
-static Property xilinx_intc_properties[] = {
-    DEFINE_PROP_UINT32("kind-of-intr", struct xlx_pic, c_kind_of_intr, 0),
-    DEFINE_PROP_END_OF_LIST(),
+static const Property xilinx_intc_properties[] = {
+    DEFINE_PROP_UINT32("kind-of-intr", XpsIntc, c_kind_of_intr, 0),
 };
 
 static void xilinx_intc_class_init(ObjectClass *klass, void *data)
@@ -193,7 +194,7 @@ static void xilinx_intc_class_init(ObjectClass *klass, void *data)
 static const TypeInfo xilinx_intc_info = {
     .name          = TYPE_XILINX_INTC,
     .parent        = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(struct xlx_pic),
+    .instance_size = sizeof(XpsIntc),
     .instance_init = xilinx_intc_init,
     .class_init    = xilinx_intc_class_init,
 };

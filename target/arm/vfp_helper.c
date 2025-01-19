@@ -21,6 +21,7 @@
 #include "cpu.h"
 #include "exec/helper-proto.h"
 #include "internals.h"
+#include "cpu-features.h"
 #ifdef CONFIG_TCG
 #include "qemu/log.h"
 #include "fpu/softfloat.h"
@@ -58,33 +59,7 @@ static inline int vfp_exceptbits_from_host(int host_bits)
     return target_bits;
 }
 
-/* Convert vfp exception flags to target form.  */
-static inline int vfp_exceptbits_to_host(int target_bits)
-{
-    int host_bits = 0;
-
-    if (target_bits & 1) {
-        host_bits |= float_flag_invalid;
-    }
-    if (target_bits & 2) {
-        host_bits |= float_flag_divbyzero;
-    }
-    if (target_bits & 4) {
-        host_bits |= float_flag_overflow;
-    }
-    if (target_bits & 8) {
-        host_bits |= float_flag_underflow;
-    }
-    if (target_bits & 0x10) {
-        host_bits |= float_flag_inexact;
-    }
-    if (target_bits & 0x80) {
-        host_bits |= float_flag_input_denormal;
-    }
-    return host_bits;
-}
-
-static uint32_t vfp_get_fpscr_from_host(CPUARMState *env)
+static uint32_t vfp_get_fpsr_from_host(CPUARMState *env)
 {
     uint32_t i;
 
@@ -98,14 +73,27 @@ static uint32_t vfp_get_fpscr_from_host(CPUARMState *env)
     return vfp_exceptbits_from_host(i);
 }
 
-static void vfp_set_fpscr_to_host(CPUARMState *env, uint32_t val)
+static void vfp_clear_float_status_exc_flags(CPUARMState *env)
 {
-    int i;
-    uint32_t changed = env->vfp.xregs[ARM_VFP_FPSCR];
+    /*
+     * Clear out all the exception-flag information in the float_status
+     * values. The caller should have arranged for env->vfp.fpsr to
+     * be the architecturally up-to-date exception flag information first.
+     */
+    set_float_exception_flags(0, &env->vfp.fp_status);
+    set_float_exception_flags(0, &env->vfp.fp_status_f16);
+    set_float_exception_flags(0, &env->vfp.standard_fp_status);
+    set_float_exception_flags(0, &env->vfp.standard_fp_status_f16);
+}
+
+static void vfp_set_fpcr_to_host(CPUARMState *env, uint32_t val, uint32_t mask)
+{
+    uint64_t changed = env->vfp.fpcr;
 
     changed ^= val;
+    changed &= mask;
     if (changed & (3 << 22)) {
-        i = (val >> 22) & 3;
+        int i = (val >> 22) & 3;
         switch (i) {
         case FPROUNDING_TIEEVEN:
             i = float_round_nearest_even;
@@ -140,52 +128,56 @@ static void vfp_set_fpscr_to_host(CPUARMState *env, uint32_t val)
         set_default_nan_mode(dnan_enabled, &env->vfp.fp_status);
         set_default_nan_mode(dnan_enabled, &env->vfp.fp_status_f16);
     }
-
-    /*
-     * The exception flags are ORed together when we read fpscr so we
-     * only need to preserve the current state in one of our
-     * float_status values.
-     */
-    i = vfp_exceptbits_to_host(val);
-    set_float_exception_flags(i, &env->vfp.fp_status);
-    set_float_exception_flags(0, &env->vfp.fp_status_f16);
-    set_float_exception_flags(0, &env->vfp.standard_fp_status);
-    set_float_exception_flags(0, &env->vfp.standard_fp_status_f16);
 }
 
 #else
 
-static uint32_t vfp_get_fpscr_from_host(CPUARMState *env)
+static uint32_t vfp_get_fpsr_from_host(CPUARMState *env)
 {
     return 0;
 }
 
-static void vfp_set_fpscr_to_host(CPUARMState *env, uint32_t val)
+static void vfp_clear_float_status_exc_flags(CPUARMState *env)
+{
+}
+
+static void vfp_set_fpcr_to_host(CPUARMState *env, uint32_t val, uint32_t mask)
 {
 }
 
 #endif
 
-uint32_t HELPER(vfp_get_fpscr)(CPUARMState *env)
+uint32_t vfp_get_fpcr(CPUARMState *env)
 {
-    uint32_t i, fpscr;
-
-    fpscr = env->vfp.xregs[ARM_VFP_FPSCR]
-            | (env->vfp.vec_len << 16)
-            | (env->vfp.vec_stride << 20);
+    uint32_t fpcr = env->vfp.fpcr
+        | (env->vfp.vec_len << 16)
+        | (env->vfp.vec_stride << 20);
 
     /*
-     * M-profile LTPSIZE overlaps A-profile Stride; whichever of the
-     * two is not applicable to this CPU will always be zero.
+     * M-profile LTPSIZE is the same bits [18:16] as A-profile Len; whichever
+     * of the two is not applicable to this CPU will always be zero.
      */
-    fpscr |= env->v7m.ltpsize << 16;
+    fpcr |= env->v7m.ltpsize << 16;
 
-    fpscr |= vfp_get_fpscr_from_host(env);
+    return fpcr;
+}
+
+uint32_t vfp_get_fpsr(CPUARMState *env)
+{
+    uint32_t fpsr = env->vfp.fpsr;
+    uint32_t i;
+
+    fpsr |= vfp_get_fpsr_from_host(env);
 
     i = env->vfp.qc[0] | env->vfp.qc[1] | env->vfp.qc[2] | env->vfp.qc[3];
-    fpscr |= i ? FPCR_QC : 0;
+    fpsr |= i ? FPSR_QC : 0;
+    return fpsr;
+}
 
-    return fpscr;
+uint32_t HELPER(vfp_get_fpscr)(CPUARMState *env)
+{
+    return (vfp_get_fpcr(env) & FPSCR_FPCR_MASK) |
+        (vfp_get_fpsr(env) & FPSCR_FPSR_MASK);
 }
 
 uint32_t vfp_get_fpscr(CPUARMState *env)
@@ -193,8 +185,44 @@ uint32_t vfp_get_fpscr(CPUARMState *env)
     return HELPER(vfp_get_fpscr)(env);
 }
 
-void HELPER(vfp_set_fpscr)(CPUARMState *env, uint32_t val)
+void vfp_set_fpsr(CPUARMState *env, uint32_t val)
 {
+    ARMCPU *cpu = env_archcpu(env);
+
+    if (arm_feature(env, ARM_FEATURE_NEON) ||
+        cpu_isar_feature(aa32_mve, cpu)) {
+        /*
+         * The bit we set within vfp.qc[] is arbitrary; the array as a
+         * whole being zero/non-zero is what counts.
+         */
+        env->vfp.qc[0] = val & FPSR_QC;
+        env->vfp.qc[1] = 0;
+        env->vfp.qc[2] = 0;
+        env->vfp.qc[3] = 0;
+    }
+
+    /*
+     * NZCV lives only in env->vfp.fpsr. The cumulative exception flags
+     * IOC|DZC|OFC|UFC|IXC|IDC also live in env->vfp.fpsr, with possible
+     * extra pending exception information that hasn't yet been folded in
+     * living in the float_status values (for TCG).
+     * Since this FPSR write gives us the up to date values of the exception
+     * flags, we want to store into vfp.fpsr the NZCV and CEXC bits, zeroing
+     * anything else. We also need to clear out the float_status exception
+     * information so that the next vfp_get_fpsr does not fold in stale data.
+     */
+    val &= FPSR_NZCV_MASK | FPSR_CEXC_MASK;
+    env->vfp.fpsr = val;
+    vfp_clear_float_status_exc_flags(env);
+}
+
+static void vfp_set_fpcr_masked(CPUARMState *env, uint32_t val, uint32_t mask)
+{
+    /*
+     * We only set FPCR bits defined by mask, and leave the others alone.
+     * We assume the mask is sensible (e.g. doesn't try to set only
+     * part of a field)
+     */
     ARMCPU *cpu = env_archcpu(env);
 
     /* When ARMv8.2-FP16 is not supported, FZ16 is RES0.  */
@@ -202,47 +230,53 @@ void HELPER(vfp_set_fpscr)(CPUARMState *env, uint32_t val)
         val &= ~FPCR_FZ16;
     }
 
-    vfp_set_fpscr_to_host(env, val);
-
-    if (!arm_feature(env, ARM_FEATURE_M)) {
-        /*
-         * Short-vector length and stride; on M-profile these bits
-         * are used for different purposes.
-         * We can't make this conditional be "if MVFR0.FPShVec != 0",
-         * because in v7A no-short-vector-support cores still had to
-         * allow Stride/Len to be written with the only effect that
-         * some insns are required to UNDEF if the guest sets them.
-         */
-        env->vfp.vec_len = extract32(val, 16, 3);
-        env->vfp.vec_stride = extract32(val, 20, 2);
-    } else if (cpu_isar_feature(aa32_mve, cpu)) {
-        env->v7m.ltpsize = extract32(val, FPCR_LTPSIZE_SHIFT,
-                                     FPCR_LTPSIZE_LENGTH);
+    if (!cpu_isar_feature(aa64_ebf16, cpu)) {
+        val &= ~FPCR_EBF;
     }
 
-    if (arm_feature(env, ARM_FEATURE_NEON) ||
-        cpu_isar_feature(aa32_mve, cpu)) {
-        /*
-         * The bit we set within fpscr_q is arbitrary; the register as a
-         * whole being zero/non-zero is what counts.
-         * TODO: M-profile MVE also has a QC bit.
-         */
-        env->vfp.qc[0] = val & FPCR_QC;
-        env->vfp.qc[1] = 0;
-        env->vfp.qc[2] = 0;
-        env->vfp.qc[3] = 0;
+    vfp_set_fpcr_to_host(env, val, mask);
+
+    if (mask & (FPCR_LEN_MASK | FPCR_STRIDE_MASK)) {
+        if (!arm_feature(env, ARM_FEATURE_M)) {
+            /*
+             * Short-vector length and stride; on M-profile these bits
+             * are used for different purposes.
+             * We can't make this conditional be "if MVFR0.FPShVec != 0",
+             * because in v7A no-short-vector-support cores still had to
+             * allow Stride/Len to be written with the only effect that
+             * some insns are required to UNDEF if the guest sets them.
+             */
+            env->vfp.vec_len = extract32(val, 16, 3);
+            env->vfp.vec_stride = extract32(val, 20, 2);
+        } else if (cpu_isar_feature(aa32_mve, cpu)) {
+            env->v7m.ltpsize = extract32(val, FPCR_LTPSIZE_SHIFT,
+                                         FPCR_LTPSIZE_LENGTH);
+        }
     }
 
     /*
      * We don't implement trapped exception handling, so the
      * trap enable bits, IDE|IXE|UFE|OFE|DZE|IOE are all RAZ/WI (not RES0!)
      *
-     * The exception flags IOC|DZC|OFC|UFC|IXC|IDC are stored in
-     * fp_status; QC, Len and Stride are stored separately earlier.
-     * Clear out all of those and the RES0 bits: only NZCV, AHP, DN,
-     * FZ, RMode and FZ16 are kept in vfp.xregs[FPSCR].
+     * The FPCR bits we keep in vfp.fpcr are AHP, DN, FZ, RMode, EBF
+     * and FZ16. Len, Stride and LTPSIZE we just handled. Store those bits
+     * there, and zero any of the other FPCR bits and the RES0 and RAZ/WI
+     * bits.
      */
-    env->vfp.xregs[ARM_VFP_FPSCR] = val & 0xf7c80000;
+    val &= FPCR_AHP | FPCR_DN | FPCR_FZ | FPCR_RMODE_MASK | FPCR_FZ16 | FPCR_EBF;
+    env->vfp.fpcr &= ~mask;
+    env->vfp.fpcr |= val;
+}
+
+void vfp_set_fpcr(CPUARMState *env, uint32_t val)
+{
+    vfp_set_fpcr_masked(env, val, MAKE_64BIT_MASK(0, 32));
+}
+
+void HELPER(vfp_set_fpscr)(CPUARMState *env, uint32_t val)
+{
+    vfp_set_fpcr_masked(env, val, FPSCR_FPCR_MASK);
+    vfp_set_fpsr(env, val & FPSCR_FPSR_MASK);
 }
 
 void vfp_set_fpscr(CPUARMState *env, uint32_t val)
@@ -255,19 +289,16 @@ void vfp_set_fpscr(CPUARMState *env, uint32_t val)
 #define VFP_HELPER(name, p) HELPER(glue(glue(vfp_,name),p))
 
 #define VFP_BINOP(name) \
-dh_ctype_f16 VFP_HELPER(name, h)(dh_ctype_f16 a, dh_ctype_f16 b, void *fpstp) \
+dh_ctype_f16 VFP_HELPER(name, h)(dh_ctype_f16 a, dh_ctype_f16 b, float_status *fpst) \
 { \
-    float_status *fpst = fpstp; \
     return float16_ ## name(a, b, fpst); \
 } \
-float32 VFP_HELPER(name, s)(float32 a, float32 b, void *fpstp) \
+float32 VFP_HELPER(name, s)(float32 a, float32 b, float_status *fpst) \
 { \
-    float_status *fpst = fpstp; \
     return float32_ ## name(a, b, fpst); \
 } \
-float64 VFP_HELPER(name, d)(float64 a, float64 b, void *fpstp) \
+float64 VFP_HELPER(name, d)(float64 a, float64 b, float_status *fpst) \
 { \
-    float_status *fpst = fpstp; \
     return float64_ ## name(a, b, fpst); \
 }
 VFP_BINOP(add)
@@ -280,49 +311,19 @@ VFP_BINOP(minnum)
 VFP_BINOP(maxnum)
 #undef VFP_BINOP
 
-dh_ctype_f16 VFP_HELPER(neg, h)(dh_ctype_f16 a)
+dh_ctype_f16 VFP_HELPER(sqrt, h)(dh_ctype_f16 a, float_status *fpst)
 {
-    return float16_chs(a);
+    return float16_sqrt(a, fpst);
 }
 
-float32 VFP_HELPER(neg, s)(float32 a)
+float32 VFP_HELPER(sqrt, s)(float32 a, float_status *fpst)
 {
-    return float32_chs(a);
+    return float32_sqrt(a, fpst);
 }
 
-float64 VFP_HELPER(neg, d)(float64 a)
+float64 VFP_HELPER(sqrt, d)(float64 a, float_status *fpst)
 {
-    return float64_chs(a);
-}
-
-dh_ctype_f16 VFP_HELPER(abs, h)(dh_ctype_f16 a)
-{
-    return float16_abs(a);
-}
-
-float32 VFP_HELPER(abs, s)(float32 a)
-{
-    return float32_abs(a);
-}
-
-float64 VFP_HELPER(abs, d)(float64 a)
-{
-    return float64_abs(a);
-}
-
-dh_ctype_f16 VFP_HELPER(sqrt, h)(dh_ctype_f16 a, CPUARMState *env)
-{
-    return float16_sqrt(a, &env->vfp.fp_status_f16);
-}
-
-float32 VFP_HELPER(sqrt, s)(float32 a, CPUARMState *env)
-{
-    return float32_sqrt(a, &env->vfp.fp_status);
-}
-
-float64 VFP_HELPER(sqrt, d)(float64 a, CPUARMState *env)
-{
-    return float64_sqrt(a, &env->vfp.fp_status);
+    return float64_sqrt(a, fpst);
 }
 
 static void softfloat_to_vfp_compare(CPUARMState *env, FloatRelation cmp)
@@ -344,8 +345,7 @@ static void softfloat_to_vfp_compare(CPUARMState *env, FloatRelation cmp)
     default:
         g_assert_not_reached();
     }
-    env->vfp.xregs[ARM_VFP_FPSCR] =
-        deposit32(env->vfp.xregs[ARM_VFP_FPSCR], 28, 4, flags);
+    env->vfp.fpsr = deposit64(env->vfp.fpsr, 28, 4, flags); /* NZCV */
 }
 
 /* XXX: check quiet/signaling case */
@@ -368,16 +368,14 @@ DO_VFP_cmp(d, float64, float64, fp_status)
 /* Integer to float and float to integer conversions */
 
 #define CONV_ITOF(name, ftype, fsz, sign)                           \
-ftype HELPER(name)(uint32_t x, void *fpstp)                         \
+ftype HELPER(name)(uint32_t x, float_status *fpst)                  \
 {                                                                   \
-    float_status *fpst = fpstp;                                     \
     return sign##int32_to_##float##fsz((sign##int32_t)x, fpst);     \
 }
 
 #define CONV_FTOI(name, ftype, fsz, sign, round)                \
-sign##int32_t HELPER(name)(ftype x, void *fpstp)                \
+sign##int32_t HELPER(name)(ftype x, float_status *fpst)         \
 {                                                               \
-    float_status *fpst = fpstp;                                 \
     if (float##fsz##_is_any_nan(x)) {                           \
         float_raise(float_flag_invalid, fpst);                  \
         return 0;                                               \
@@ -402,22 +400,22 @@ FLOAT_CONVS(ui, d, float64, 64, u)
 #undef FLOAT_CONVS
 
 /* floating point conversion */
-float64 VFP_HELPER(fcvtd, s)(float32 x, CPUARMState *env)
+float64 VFP_HELPER(fcvtd, s)(float32 x, float_status *status)
 {
-    return float32_to_float64(x, &env->vfp.fp_status);
+    return float32_to_float64(x, status);
 }
 
-float32 VFP_HELPER(fcvts, d)(float64 x, CPUARMState *env)
+float32 VFP_HELPER(fcvts, d)(float64 x, float_status *status)
 {
-    return float64_to_float32(x, &env->vfp.fp_status);
+    return float64_to_float32(x, status);
 }
 
-uint32_t HELPER(bfcvt)(float32 x, void *status)
+uint32_t HELPER(bfcvt)(float32 x, float_status *status)
 {
     return float32_to_bfloat16(x, status);
 }
 
-uint32_t HELPER(bfcvt_pair)(uint64_t pair, void *status)
+uint32_t HELPER(bfcvt_pair)(uint64_t pair, float_status *status)
 {
     bfloat16 lo = float32_to_bfloat16(extract64(pair, 0, 32), status);
     bfloat16 hi = float32_to_bfloat16(extract64(pair, 32, 32), status);
@@ -433,26 +431,25 @@ uint32_t HELPER(bfcvt_pair)(uint64_t pair, void *status)
  */
 #define VFP_CONV_FIX_FLOAT(name, p, fsz, ftype, isz, itype)            \
 ftype HELPER(vfp_##name##to##p)(uint##isz##_t  x, uint32_t shift,      \
-                                     void *fpstp) \
-{ return itype##_to_##float##fsz##_scalbn(x, -shift, fpstp); }
+                                float_status *fpst)                    \
+{ return itype##_to_##float##fsz##_scalbn(x, -shift, fpst); }
 
 #define VFP_CONV_FIX_FLOAT_ROUND(name, p, fsz, ftype, isz, itype)      \
     ftype HELPER(vfp_##name##to##p##_round_to_nearest)(uint##isz##_t  x, \
                                                      uint32_t shift,   \
-                                                     void *fpstp)      \
+                                                     float_status *fpst) \
     {                                                                  \
         ftype ret;                                                     \
-        float_status *fpst = fpstp;                                    \
         FloatRoundMode oldmode = fpst->float_rounding_mode;            \
         fpst->float_rounding_mode = float_round_nearest_even;          \
-        ret = itype##_to_##float##fsz##_scalbn(x, -shift, fpstp);      \
+        ret = itype##_to_##float##fsz##_scalbn(x, -shift, fpst);       \
         fpst->float_rounding_mode = oldmode;                           \
         return ret;                                                    \
     }
 
 #define VFP_CONV_FLOAT_FIX_ROUND(name, p, fsz, ftype, isz, itype, ROUND, suff) \
 uint##isz##_t HELPER(vfp_to##name##p##suff)(ftype x, uint32_t shift,      \
-                                            void *fpst)                   \
+                                            float_status *fpst)           \
 {                                                                         \
     if (unlikely(float##fsz##_is_any_nan(x))) {                           \
         float_raise(float_flag_invalid, fpst);                            \
@@ -492,6 +489,10 @@ VFP_CONV_FIX_A64(sq, h, 16, dh_ctype_f16, 64, int64)
 VFP_CONV_FIX(uh, h, 16, dh_ctype_f16, 32, uint16)
 VFP_CONV_FIX(ul, h, 16, dh_ctype_f16, 32, uint32)
 VFP_CONV_FIX_A64(uq, h, 16, dh_ctype_f16, 64, uint64)
+VFP_CONV_FLOAT_FIX_ROUND(sq, d, 64, float64, 64, int64,
+                         float_round_to_zero, _round_to_zero)
+VFP_CONV_FLOAT_FIX_ROUND(uq, d, 64, float64, 64, uint64,
+                         float_round_to_zero, _round_to_zero)
 
 #undef VFP_CONV_FIX
 #undef VFP_CONV_FIX_FLOAT
@@ -501,10 +502,8 @@ VFP_CONV_FIX_A64(uq, h, 16, dh_ctype_f16, 64, uint64)
 /* Set the current fp rounding mode and return the old one.
  * The argument is a softfloat float_round_ value.
  */
-uint32_t HELPER(set_rmode)(uint32_t rmode, void *fpstp)
+uint32_t HELPER(set_rmode)(uint32_t rmode, float_status *fp_status)
 {
-    float_status *fp_status = fpstp;
-
     uint32_t prev_rmode = get_float_rounding_mode(fp_status);
     set_float_rounding_mode(rmode, fp_status);
 
@@ -512,12 +511,12 @@ uint32_t HELPER(set_rmode)(uint32_t rmode, void *fpstp)
 }
 
 /* Half precision conversions.  */
-float32 HELPER(vfp_fcvt_f16_to_f32)(uint32_t a, void *fpstp, uint32_t ahp_mode)
+float32 HELPER(vfp_fcvt_f16_to_f32)(uint32_t a, float_status *fpst,
+                                    uint32_t ahp_mode)
 {
     /* Squash FZ16 to 0 for the duration of conversion.  In this case,
      * it would affect flushing input denormals.
      */
-    float_status *fpst = fpstp;
     bool save = get_flush_inputs_to_zero(fpst);
     set_flush_inputs_to_zero(false, fpst);
     float32 r = float16_to_float32(a, !ahp_mode, fpst);
@@ -525,12 +524,12 @@ float32 HELPER(vfp_fcvt_f16_to_f32)(uint32_t a, void *fpstp, uint32_t ahp_mode)
     return r;
 }
 
-uint32_t HELPER(vfp_fcvt_f32_to_f16)(float32 a, void *fpstp, uint32_t ahp_mode)
+uint32_t HELPER(vfp_fcvt_f32_to_f16)(float32 a, float_status *fpst,
+                                     uint32_t ahp_mode)
 {
     /* Squash FZ16 to 0 for the duration of conversion.  In this case,
      * it would affect flushing output denormals.
      */
-    float_status *fpst = fpstp;
     bool save = get_flush_to_zero(fpst);
     set_flush_to_zero(false, fpst);
     float16 r = float32_to_float16(a, !ahp_mode, fpst);
@@ -538,12 +537,12 @@ uint32_t HELPER(vfp_fcvt_f32_to_f16)(float32 a, void *fpstp, uint32_t ahp_mode)
     return r;
 }
 
-float64 HELPER(vfp_fcvt_f16_to_f64)(uint32_t a, void *fpstp, uint32_t ahp_mode)
+float64 HELPER(vfp_fcvt_f16_to_f64)(uint32_t a, float_status *fpst,
+                                    uint32_t ahp_mode)
 {
     /* Squash FZ16 to 0 for the duration of conversion.  In this case,
      * it would affect flushing input denormals.
      */
-    float_status *fpst = fpstp;
     bool save = get_flush_inputs_to_zero(fpst);
     set_flush_inputs_to_zero(false, fpst);
     float64 r = float16_to_float64(a, !ahp_mode, fpst);
@@ -551,12 +550,12 @@ float64 HELPER(vfp_fcvt_f16_to_f64)(uint32_t a, void *fpstp, uint32_t ahp_mode)
     return r;
 }
 
-uint32_t HELPER(vfp_fcvt_f64_to_f16)(float64 a, void *fpstp, uint32_t ahp_mode)
+uint32_t HELPER(vfp_fcvt_f64_to_f16)(float64 a, float_status *fpst,
+                                     uint32_t ahp_mode)
 {
     /* Squash FZ16 to 0 for the duration of conversion.  In this case,
      * it would affect flushing output denormals.
      */
-    float_status *fpst = fpstp;
     bool save = get_flush_to_zero(fpst);
     set_flush_to_zero(false, fpst);
     float16 r = float64_to_float16(a, !ahp_mode, fpst);
@@ -657,9 +656,8 @@ static bool round_to_inf(float_status *fpst, bool sign_bit)
     }
 }
 
-uint32_t HELPER(recpe_f16)(uint32_t input, void *fpstp)
+uint32_t HELPER(recpe_f16)(uint32_t input, float_status *fpst)
 {
-    float_status *fpst = fpstp;
     float16 f16 = float16_squash_input_denormal(input, fpst);
     uint32_t f16_val = float16_val(f16);
     uint32_t f16_sign = float16_is_neg(f16);
@@ -707,9 +705,8 @@ uint32_t HELPER(recpe_f16)(uint32_t input, void *fpstp)
     return make_float16(f16_val);
 }
 
-float32 HELPER(recpe_f32)(float32 input, void *fpstp)
+float32 HELPER(recpe_f32)(float32 input, float_status *fpst)
 {
-    float_status *fpst = fpstp;
     float32 f32 = float32_squash_input_denormal(input, fpst);
     uint32_t f32_val = float32_val(f32);
     bool f32_sign = float32_is_neg(f32);
@@ -757,9 +754,8 @@ float32 HELPER(recpe_f32)(float32 input, void *fpstp)
     return make_float32(f32_val);
 }
 
-float64 HELPER(recpe_f64)(float64 input, void *fpstp)
+float64 HELPER(recpe_f64)(float64 input, float_status *fpst)
 {
-    float_status *fpst = fpstp;
     float64 f64 = float64_squash_input_denormal(input, fpst);
     uint64_t f64_val = float64_val(f64);
     bool f64_sign = float64_is_neg(f64);
@@ -858,9 +854,8 @@ static uint64_t recip_sqrt_estimate(int *exp , int exp_off, uint64_t frac)
     return extract64(estimate, 0, 8) << 44;
 }
 
-uint32_t HELPER(rsqrte_f16)(uint32_t input, void *fpstp)
+uint32_t HELPER(rsqrte_f16)(uint32_t input, float_status *s)
 {
-    float_status *s = fpstp;
     float16 f16 = float16_squash_input_denormal(input, s);
     uint16_t val = float16_val(f16);
     bool f16_sign = float16_is_neg(f16);
@@ -873,7 +868,7 @@ uint32_t HELPER(rsqrte_f16)(uint32_t input, void *fpstp)
         if (float16_is_signaling_nan(f16, s)) {
             float_raise(float_flag_invalid, s);
             if (!s->default_nan_mode) {
-                nan = float16_silence_nan(f16, fpstp);
+                nan = float16_silence_nan(f16, s);
             }
         }
         if (s->default_nan_mode) {
@@ -904,9 +899,8 @@ uint32_t HELPER(rsqrte_f16)(uint32_t input, void *fpstp)
     return make_float16(val);
 }
 
-float32 HELPER(rsqrte_f32)(float32 input, void *fpstp)
+float32 HELPER(rsqrte_f32)(float32 input, float_status *s)
 {
-    float_status *s = fpstp;
     float32 f32 = float32_squash_input_denormal(input, s);
     uint32_t val = float32_val(f32);
     uint32_t f32_sign = float32_is_neg(f32);
@@ -919,7 +913,7 @@ float32 HELPER(rsqrte_f32)(float32 input, void *fpstp)
         if (float32_is_signaling_nan(f32, s)) {
             float_raise(float_flag_invalid, s);
             if (!s->default_nan_mode) {
-                nan = float32_silence_nan(f32, fpstp);
+                nan = float32_silence_nan(f32, s);
             }
         }
         if (s->default_nan_mode) {
@@ -950,9 +944,8 @@ float32 HELPER(rsqrte_f32)(float32 input, void *fpstp)
     return make_float32(val);
 }
 
-float64 HELPER(rsqrte_f64)(float64 input, void *fpstp)
+float64 HELPER(rsqrte_f64)(float64 input, float_status *s)
 {
-    float_status *s = fpstp;
     float64 f64 = float64_squash_input_denormal(input, s);
     uint64_t val = float64_val(f64);
     bool f64_sign = float64_is_neg(f64);
@@ -964,7 +957,7 @@ float64 HELPER(rsqrte_f64)(float64 input, void *fpstp)
         if (float64_is_signaling_nan(f64, s)) {
             float_raise(float_flag_invalid, s);
             if (!s->default_nan_mode) {
-                nan = float64_silence_nan(f64, fpstp);
+                nan = float64_silence_nan(f64, s);
             }
         }
         if (s->default_nan_mode) {
@@ -1019,41 +1012,40 @@ uint32_t HELPER(rsqrte_u32)(uint32_t a)
 
 /* VFPv4 fused multiply-accumulate */
 dh_ctype_f16 VFP_HELPER(muladd, h)(dh_ctype_f16 a, dh_ctype_f16 b,
-                                   dh_ctype_f16 c, void *fpstp)
+                                   dh_ctype_f16 c, float_status *fpst)
 {
-    float_status *fpst = fpstp;
     return float16_muladd(a, b, c, 0, fpst);
 }
 
-float32 VFP_HELPER(muladd, s)(float32 a, float32 b, float32 c, void *fpstp)
+float32 VFP_HELPER(muladd, s)(float32 a, float32 b, float32 c,
+                              float_status *fpst)
 {
-    float_status *fpst = fpstp;
     return float32_muladd(a, b, c, 0, fpst);
 }
 
-float64 VFP_HELPER(muladd, d)(float64 a, float64 b, float64 c, void *fpstp)
+float64 VFP_HELPER(muladd, d)(float64 a, float64 b, float64 c,
+                              float_status *fpst)
 {
-    float_status *fpst = fpstp;
     return float64_muladd(a, b, c, 0, fpst);
 }
 
 /* ARMv8 round to integral */
-dh_ctype_f16 HELPER(rinth_exact)(dh_ctype_f16 x, void *fp_status)
+dh_ctype_f16 HELPER(rinth_exact)(dh_ctype_f16 x, float_status *fp_status)
 {
     return float16_round_to_int(x, fp_status);
 }
 
-float32 HELPER(rints_exact)(float32 x, void *fp_status)
+float32 HELPER(rints_exact)(float32 x, float_status *fp_status)
 {
     return float32_round_to_int(x, fp_status);
 }
 
-float64 HELPER(rintd_exact)(float64 x, void *fp_status)
+float64 HELPER(rintd_exact)(float64 x, float_status *fp_status)
 {
     return float64_round_to_int(x, fp_status);
 }
 
-dh_ctype_f16 HELPER(rinth)(dh_ctype_f16 x, void *fp_status)
+dh_ctype_f16 HELPER(rinth)(dh_ctype_f16 x, float_status *fp_status)
 {
     int old_flags = get_float_exception_flags(fp_status), new_flags;
     float16 ret;
@@ -1069,7 +1061,7 @@ dh_ctype_f16 HELPER(rinth)(dh_ctype_f16 x, void *fp_status)
     return ret;
 }
 
-float32 HELPER(rints)(float32 x, void *fp_status)
+float32 HELPER(rints)(float32 x, float_status *fp_status)
 {
     int old_flags = get_float_exception_flags(fp_status), new_flags;
     float32 ret;
@@ -1085,14 +1077,12 @@ float32 HELPER(rints)(float32 x, void *fp_status)
     return ret;
 }
 
-float64 HELPER(rintd)(float64 x, void *fp_status)
+float64 HELPER(rintd)(float64 x, float_status *fp_status)
 {
     int old_flags = get_float_exception_flags(fp_status), new_flags;
     float64 ret;
 
     ret = float64_round_to_int(x, fp_status);
-
-    new_flags = get_float_exception_flags(fp_status);
 
     /* Suppress any inexact exceptions the conversion produced */
     if (!(old_flags & float_flag_inexact)) {
@@ -1104,104 +1094,37 @@ float64 HELPER(rintd)(float64 x, void *fp_status)
 }
 
 /* Convert ARM rounding mode to softfloat */
-int arm_rmode_to_sf(int rmode)
-{
-    switch (rmode) {
-    case FPROUNDING_TIEAWAY:
-        rmode = float_round_ties_away;
-        break;
-    case FPROUNDING_ODD:
-        /* FIXME: add support for TIEAWAY and ODD */
-        qemu_log_mask(LOG_UNIMP, "arm: unimplemented rounding mode: %d\n",
-                      rmode);
-        /* fall through for now */
-    case FPROUNDING_TIEEVEN:
-    default:
-        rmode = float_round_nearest_even;
-        break;
-    case FPROUNDING_POSINF:
-        rmode = float_round_up;
-        break;
-    case FPROUNDING_NEGINF:
-        rmode = float_round_down;
-        break;
-    case FPROUNDING_ZERO:
-        rmode = float_round_to_zero;
-        break;
-    }
-    return rmode;
-}
+const FloatRoundMode arm_rmode_to_sf_map[] = {
+    [FPROUNDING_TIEEVEN] = float_round_nearest_even,
+    [FPROUNDING_POSINF] = float_round_up,
+    [FPROUNDING_NEGINF] = float_round_down,
+    [FPROUNDING_ZERO] = float_round_to_zero,
+    [FPROUNDING_TIEAWAY] = float_round_ties_away,
+    [FPROUNDING_ODD] = float_round_to_odd,
+};
 
 /*
  * Implement float64 to int32_t conversion without saturation;
  * the result is supplied modulo 2^32.
  */
-uint64_t HELPER(fjcvtzs)(float64 value, void *vstatus)
+uint64_t HELPER(fjcvtzs)(float64 value, float_status *status)
 {
-    float_status *status = vstatus;
-    uint32_t exp, sign;
-    uint64_t frac;
-    uint32_t inexact = 1; /* !Z */
+    uint32_t frac, e_old, e_new;
+    bool inexact;
 
-    sign = extract64(value, 63, 1);
-    exp = extract64(value, 52, 11);
-    frac = extract64(value, 0, 52);
+    e_old = get_float_exception_flags(status);
+    set_float_exception_flags(0, status);
+    frac = float64_to_int32_modulo(value, float_round_to_zero, status);
+    e_new = get_float_exception_flags(status);
+    set_float_exception_flags(e_old | e_new, status);
 
-    if (exp == 0) {
-        /* While not inexact for IEEE FP, -0.0 is inexact for JavaScript.  */
-        inexact = sign;
-        if (frac != 0) {
-            if (status->flush_inputs_to_zero) {
-                float_raise(float_flag_input_denormal, status);
-            } else {
-                float_raise(float_flag_inexact, status);
-                inexact = 1;
-            }
-        }
-        frac = 0;
-    } else if (exp == 0x7ff) {
-        /* This operation raises Invalid for both NaN and overflow (Inf).  */
-        float_raise(float_flag_invalid, status);
-        frac = 0;
-    } else {
-        int true_exp = exp - 1023;
-        int shift = true_exp - 52;
+    /* Normal inexact, denormal with flush-to-zero, or overflow or NaN */
+    inexact = e_new & (float_flag_inexact |
+                       float_flag_input_denormal |
+                       float_flag_invalid);
 
-        /* Restore implicit bit.  */
-        frac |= 1ull << 52;
-
-        /* Shift the fraction into place.  */
-        if (shift >= 0) {
-            /* The number is so large we must shift the fraction left.  */
-            if (shift >= 64) {
-                /* The fraction is shifted out entirely.  */
-                frac = 0;
-            } else {
-                frac <<= shift;
-            }
-        } else if (shift > -64) {
-            /* Normal case -- shift right and notice if bits shift out.  */
-            inexact = (frac << (64 + shift)) != 0;
-            frac >>= -shift;
-        } else {
-            /* The fraction is shifted out entirely.  */
-            frac = 0;
-        }
-
-        /* Notice overflow or inexact exceptions.  */
-        if (true_exp > 31 || frac > (sign ? 0x80000000ull : 0x7fffffff)) {
-            /* Overflow, for which this operation raises invalid.  */
-            float_raise(float_flag_invalid, status);
-            inexact = 1;
-        } else if (inexact) {
-            float_raise(float_flag_inexact, status);
-        }
-
-        /* Honor the sign.  */
-        if (sign) {
-            frac = -frac;
-        }
-    }
+    /* While not inexact for IEEE FP, -0.0 is inexact for JavaScript. */
+    inexact |= value == float64_chs(float64_zero);
 
     /* Pack the result and the env->ZF representation of Z together.  */
     return deposit64(frac, 32, 32, inexact);
@@ -1214,8 +1137,7 @@ uint32_t HELPER(vjcvt)(float64 value, CPUARMState *env)
     uint32_t z = (pair >> 32) == 0;
 
     /* Store Z, clear NCV, in FPSCR.NZCV.  */
-    env->vfp.xregs[ARM_VFP_FPSCR]
-        = (env->vfp.xregs[ARM_VFP_FPSCR] & ~CPSR_NZCV) | (z * CPSR_Z);
+    env->vfp.fpsr = (env->vfp.fpsr & ~FPSR_NZCV_MASK) | (z * FPSR_Z);
 
     return result;
 }
@@ -1258,12 +1180,12 @@ static float32 frint_s(float32 f, float_status *fpst, int intsize)
     return (0x100u + 126u + intsize) << 23;
 }
 
-float32 HELPER(frint32_s)(float32 f, void *fpst)
+float32 HELPER(frint32_s)(float32 f, float_status *fpst)
 {
     return frint_s(f, fpst, 32);
 }
 
-float32 HELPER(frint64_s)(float32 f, void *fpst)
+float32 HELPER(frint64_s)(float32 f, float_status *fpst)
 {
     return frint_s(f, fpst, 64);
 }
@@ -1306,12 +1228,12 @@ static float64 frint_d(float64 f, float_status *fpst, int intsize)
     return (uint64_t)(0x800 + 1022 + intsize) << 52;
 }
 
-float64 HELPER(frint32_d)(float64 f, void *fpst)
+float64 HELPER(frint32_d)(float64 f, float_status *fpst)
 {
     return frint_d(f, fpst, 32);
 }
 
-float64 HELPER(frint64_d)(float64 f, void *fpst)
+float64 HELPER(frint64_d)(float64 f, float_status *fpst)
 {
     return frint_d(f, fpst, 64);
 }

@@ -1,3 +1,4 @@
+system_ss.add(files('trace-hmp-cmds.c'))
 
 specific_ss.add(files('control-target.c'))
 
@@ -63,22 +64,8 @@ trace_events_all = custom_target('trace-events-all',
                                  input: trace_events_files,
                                  command: [ 'cat', '@INPUT@' ],
                                  capture: true,
-                                 install: true,
+                                 install: get_option('trace_backends') != [ 'nop' ],
                                  install_dir: qemu_datadir)
-
-foreach d : [
-  ['generated-tcg-tracers.h', 'tcg-h'],
-  ['generated-helpers.c', 'tcg-helper-c'],
-  ['generated-helpers.h', 'tcg-helper-h'],
-  ['generated-helpers-wrappers.h', 'tcg-helper-wrapper-h'],
-]
-  gen = custom_target(d[0],
-                output: d[0],
-                input: meson.project_source_root() / 'trace-events',
-                command: [ tracetool, '--group=root', '--format=@0@'.format(d[1]), '@INPUT@', '@OUTPUT@' ],
-                depend_files: tracetool_depends)
-  specific_ss.add(when: 'CONFIG_TCG', if_true: gen)
-endforeach
 
 if 'ust' in get_option('trace_backends')
   trace_ust_all_h = custom_target('trace-ust-all.h',
@@ -102,4 +89,6 @@ if 'ftrace' in get_option('trace_backends')
   trace_ss.add(files('ftrace.c'))
 endif
 trace_ss.add(files('control.c'))
-trace_ss.add(files('qmp.c'))
+if have_system or have_tools or have_ga
+  trace_ss.add(files('qmp.c'))
+endif
